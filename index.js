@@ -1,14 +1,34 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
 const fs = require('fs');
+const http = require('http');
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// Configuration
+const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
-const PDF_FILE_PATH = process.env.PDF_FILE_PATH;
+const PDF_FILE_PATH = process.env.PDF_FILE_PATH || './Rebuild-Your-Self-Esteem-in-7-Days.pdf';
+const PORT = process.env.PORT || 3000;
 const VIP_BOOK_CLUB_LINK = 'https://t.me/+eboPYDMzR7VlMzU1';
+
+if (!BOT_TOKEN) {
+  console.error('Error: BOT_TOKEN is not defined in environment variables.');
+  process.exit(1);
+}
+
+const bot = new Telegraf(BOT_TOKEN);
 
 // In-memory storage for users and payment confirmations
 const users = {}; // { userId: { username, paymentConfirmed: false, paymentScreenshotFileId: null } }
+
+// Simple Web Server for Render Health Check
+const server = http.createServer((req, res) => {
+  res.writeHead(200, { 'Content-Type': 'text/plain' });
+  res.end('Bot is running!\n');
+});
+
+server.listen(PORT, () => {
+  console.log(`Web server listening on port ${PORT}`);
+});
 
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
@@ -83,11 +103,16 @@ bot.on('photo', async (ctx) => {
 
   // Forward the image to ADMIN_ID
   try {
-    await ctx.telegram.sendPhoto(ADMIN_ID, fileId, {
-      caption: `Payment screenshot from ${username} (ID: ${userId}).\nTo confirm, use: /confirm ${userId}`,
-    });
-    await ctx.reply('✅ Payment received. Admin will confirm shortly.');
-    console.log(`Payment screenshot received from ${username} (${userId})`);
+    if (ADMIN_ID) {
+      await ctx.telegram.sendPhoto(ADMIN_ID, fileId, {
+        caption: `Payment screenshot from ${username} (ID: ${userId}).\nTo confirm, use: /confirm ${userId}`,
+      });
+      await ctx.reply('✅ Payment received. Admin will confirm shortly.');
+      console.log(`Payment screenshot received from ${username} (${userId})`);
+    } else {
+      console.error('ADMIN_ID is not set. Cannot forward screenshot.');
+      await ctx.reply('Admin notification is currently disabled. Please contact support.');
+    }
   } catch (error) {
     console.error('Error forwarding photo to admin:', error);
     await ctx.reply('An error occurred while processing your payment. Please try again or contact support.');
@@ -121,7 +146,13 @@ bot.command('confirm', async (ctx) => {
     await ctx.telegram.sendMessage(targetUserId, '✅ Payment Confirmed');
 
     // Send PDF file to the user
-    await ctx.telegram.sendDocument(targetUserId, { source: PDF_FILE_PATH }, { caption: '📘 Your ebook:' });
+    if (fs.existsSync(PDF_FILE_PATH)) {
+      await ctx.telegram.sendDocument(targetUserId, { source: PDF_FILE_PATH }, { caption: '📘 Your ebook:' });
+    } else {
+      console.error(`File not found at: ${PDF_FILE_PATH}`);
+      await ctx.telegram.sendMessage(targetUserId, '⚠️ Sorry, the ebook file is currently missing. Admin has been notified.');
+      await ctx.telegram.sendMessage(ADMIN_ID, `⚠️ Error: PDF file not found at ${PDF_FILE_PATH}`);
+    }
 
     // Send VIP Book Club link
     await ctx.telegram.sendMessage(
@@ -143,9 +174,9 @@ bot.catch((err, ctx) => {
   console.error(`Ooops, encountered an error for ${ctx.updateType}`, err);
 });
 
-bot.launch();
-
-console.log('Bot started');
+bot.launch().then(() => {
+  console.log('Bot launched successfully');
+});
 
 // Enable graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
