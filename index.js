@@ -23,7 +23,7 @@ bot.start(async (ctx) => {
   ]));
 });
 
-// ===== BROWSE CATEGORY =====
+// ===== BROWSE =====
 bot.action('browse', async (ctx) => {
   const { data } = await supabase.from('products').select('category');
 
@@ -45,6 +45,7 @@ bot.action(/^cat_(.+)/, async (ctx) => {
   showProducts(ctx, data);
 });
 
+// ===== SHOW PRODUCTS =====
 function showProducts(ctx, products) {
   if (!products || products.length === 0) return ctx.reply('No products');
 
@@ -58,7 +59,12 @@ function showProducts(ctx, products) {
 // ===== VIEW =====
 bot.action(/^view_(.+)/, async (ctx) => {
   const id = ctx.match[1];
-  const { data: p } = await supabase.from('products').select('*').eq('id', id).single();
+
+  const { data: p } = await supabase
+    .from('products')
+    .select('*')
+    .eq('id', id)
+    .single();
 
   if (!p) return ctx.reply('Not found');
 
@@ -70,7 +76,9 @@ bot.action(/^view_(.+)/, async (ctx) => {
 
   ctx.reply(
     `📦 ${p.name}\n💰 ${price} MMK\n\n${p.description}`,
-    Markup.inlineKeyboard([[Markup.button.callback('💳 Buy', `buy_${p.id}`)]])
+    Markup.inlineKeyboard([
+      [Markup.button.callback('💳 Buy', `buy_${p.id}`)]
+    ])
   );
 });
 
@@ -96,7 +104,9 @@ bot.action(/^buy_(.+)/, async (ctx) => {
 
   ctx.reply(
     '💳 Payment\nKBZ/Wave\n\n📸 Send screenshot',
-    Markup.inlineKeyboard([[Markup.button.callback("I've Paid", 'paid')]])
+    Markup.inlineKeyboard([
+      [Markup.button.callback("I've Paid", 'paid')]
+    ])
   );
 });
 
@@ -143,12 +153,12 @@ bot.action(/^ok_(.+)/, async (ctx) => {
     await bot.telegram.sendDocument(userId, p.file_url);
   }
 
-  if (p.channels) {
+  if (p.channels && p.channels.length > 0) {
     const links = p.channels.join('\n');
     await bot.telegram.sendMessage(userId, `🔗 Join:\n${links}`);
   }
 
-  await bot.telegram.sendMessage(userId, '✅ Done!');
+  await bot.telegram.sendMessage(userId, '✅ Payment confirmed!');
 
   await supabase
     .from('orders')
@@ -168,13 +178,17 @@ bot.command('add', (ctx) => {
   ctx.reply('Send:\nid|name|price|desc|file_url|channels|category|image_url');
 });
 
+// ===== TEXT HANDLER (ONLY ONE) =====
 bot.on('text', async (ctx) => {
   if (String(ctx.from.id) !== ADMIN_ID) return;
 
-  if (ctx.message.text.includes('|')) {
+  const text = ctx.message.text;
+
+  // ADD PRODUCT
+  if (text.includes('|')) {
     try {
       const [id, name, price, desc, file_url, channels, category, image_url] =
-        ctx.message.text.split('|');
+        text.split('|');
 
       await supabase.from('products').insert({
         id,
@@ -187,24 +201,15 @@ bot.on('text', async (ctx) => {
         image_url
       });
 
-      ctx.reply('✅ Product added');
+      return ctx.reply('✅ Product added');
     } catch {
-      ctx.reply('❌ Format error');
+      return ctx.reply('❌ Format error');
     }
   }
-});
 
-// ===== BROADCAST =====
-bot.command('broadcast', async (ctx) => {
-  if (String(ctx.from.id) !== ADMIN_ID) return;
-  ctx.reply('Send broadcast message');
-});
-
-bot.on('text', async (ctx) => {
-  if (String(ctx.from.id) !== ADMIN_ID) return;
-
-  if (ctx.message.text.startsWith('BROADCAST:')) {
-    const msg = ctx.message.text.replace('BROADCAST:', '');
+  // BROADCAST
+  if (text.startsWith('BROADCAST:')) {
+    const msg = text.replace('BROADCAST:', '');
 
     const { data: users } = await supabase.from('users').select('id');
 
@@ -214,7 +219,7 @@ bot.on('text', async (ctx) => {
       } catch {}
     }
 
-    ctx.reply('📢 Broadcast done');
+    return ctx.reply('📢 Broadcast done');
   }
 });
 
