@@ -1,172 +1,176 @@
 require('dotenv').config();
 const { Telegraf, Markup } = require('telegraf');
-const fs = require('fs');
+const { createClient } = require('@supabase/supabase-js');
 const http = require('http');
 const https = require('https');
 
-// --- CONFIGURATION ---
-const BOT_TOKEN = process.env.BOT_TOKEN;
-const ADMIN_ID = process.env.ADMIN_ID;
-const ADMIN_USERNAME = 'Diary1031'; 
-const PDF_FILE_PATH = process.env.PDF_FILE_PATH || './Rebuild-Your-Self-Esteem-in-7-Days.pdf';
+const bot = new Telegraf(process.env.BOT_TOKEN);
+const ADMIN_ID = String(process.env.ADMIN_ID);
+const APP_URL = process.env.APP_URL;
 const PORT = process.env.PORT || 3000;
-const APP_URL = 'https://my-ebook-sales-bot.onrender.com';
-const VIP_BOOK_CLUB_LINK = 'https://t.me/+eboPYDMzR7VlMzU1';
 
-if (!BOT_TOKEN) { process.exit(1); }
+// Supabase Setup
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-const bot = new Telegraf(BOT_TOKEN);
-
-// --- DATA STORAGE ---
-// မှတ်ချက် - Render Free Plan သည် Restart ဖြစ်ပါက ဤအချက်အလက်များ Reset ဖြစ်နိုင်ပါသည်။
-let products = [
-  { id: 'self_respect', name: '📘 7-Day Self-Respect System', price: '20,000 ks', category: 'Ebooks' }
-];
-let users = {}; 
-
-// --- SELF-PING SYSTEM (၅ မိနစ်တစ်ခါ နိုးပေးပါမည်) ---
+// ====== SELF PING (5 MIN) ======
 setInterval(() => {
-  https.get(APP_URL, (res) => console.log(`Ping: ${res.statusCode}`)).on('error', (e) => console.error(e));
+  if (APP_URL) {
+    https.get(APP_URL).on('error', () => {});
+  }
 }, 5 * 60 * 1000);
 
-// Health Check Server
-http.createServer((req, res) => { res.writeHead(200); res.end('Bot is Live'); }).listen(PORT);
+// health server
+http.createServer((req, res) => {
+  res.writeHead(200);
+  res.end('Bot alive');
+}).listen(PORT);
 
-// --- HELPER FUNCTIONS ---
-const getMainMenu = () => Markup.inlineKeyboard([
-  [Markup.button.callback('🛍️ Browse Products', 'browse_categories')],
-  [Markup.button.callback('❓ FAQ (မေးခွန်းများ)', 'show_faq')],
-  [Markup.button.url('📞 Contact Admin', `https://t.me/${ADMIN_USERNAME}`)]
-]);
-
-// --- USER COMMANDS ---
+// ====== START ======
 bot.start(async (ctx) => {
-  users[ctx.from.id] = { id: ctx.from.id, username: ctx.from.username || ctx.from.first_name };
-  await ctx.reply('👋 Diary Book Store မှ ကြိုဆိုပါတယ်။\n\nအောက်ပါခလုတ်များကို အသုံးပြုနိုင်ပါတယ် -', getMainMenu());
+  const { data, error } = await supabase
+    .from('users')
+    .upsert({ id: ctx.from.id, username: ctx.from.username })
+    .select();
+
+  await ctx.reply(
+    "📚 Welcome to Ebook Store",
+    Markup.inlineKeyboard([
+      [Markup.button.callback("🛍 Browse Products", "browse")],
+      [Markup.button.callback("📞 Contact Admin", "contact")]
+    ])
+  );
 });
 
-bot.action('back_to_start', async (ctx) => {
-  await ctx.editMessageText('👋 Diary Book Store မှ ကြိုဆိုပါတယ်။', getMainMenu());
-});
-
-// --- PRODUCT BROWSER ---
-bot.action('browse_categories', async (ctx) => {
-  await ctx.editMessageText('📂 အမျိုးအစားကို ရွေးချယ်ပါ -', Markup.inlineKeyboard([
-    [Markup.button.callback('📚 Ebooks', 'cat_Ebooks')],
-    [Markup.button.callback('🎓 Courses', 'cat_Courses')],
-    [Markup.button.callback('🔙 Back', 'back_to_start')]
-  ]));
-});
-
-bot.action(/^cat_(.+)$/, async (ctx) => {
-  const category = ctx.match[1];
-  const filtered = products.filter(p => p.category === category);
-  if (filtered.length === 0) return ctx.answerCbQuery('ဒီအမျိုးအစားမှာ ပစ္စည်းမရှိသေးပါ။');
+// ====== BROWSE ======
+bot.action('browse', async (ctx) => {
+  const { data: products, error } = await supabase.from('products').select('*');
   
-  const buttons = filtered.map(p => [Markup.button.callback(p.name, `view_prod_${p.id}`)]);
-  buttons.push([Markup.button.callback('🔙 Back', 'browse_categories')]);
-  await ctx.editMessageText(`${category} များ -`, Markup.inlineKeyboard(buttons));
+  if (!products || products.length === 0) {
+    return ctx.reply("No products yet");
+  }
+
+  const buttons = products.map(p => [
+    Markup.button.callback(p.name, `view_${p.id}`)
+  ]);
+
+  await ctx.reply("Select product:", Markup.inlineKeyboard(buttons));
 });
 
-bot.action(/^view_prod_(.+)$/, async (ctx) => {
-  const prod = products.find(p => p.id === ctx.match[1]);
-  if (!prod) return ctx.answerCbQuery('Product not found.');
-  await ctx.reply(`📦 **${prod.name}**\n💰 ဈေးနှုန်း: ${prod.price}\n\nဝယ်ယူရန် 'Buy Now' ကို နှိပ်ပါ -`, 
-    Markup.inlineKeyboard([[Markup.button.callback('💳 Buy Now', 'buy_now')]]));
+// ====== VIEW PRODUCT ======
+bot.action(/^view_(.+)/, async (ctx) => {
+  const id = ctx.match[1];
+  const { data: p, error } = await supabase.from('products').select('*').eq('id', id).single();
+
+  if (!p) return ctx.reply("Not found");
+
+  let price = p.discount
+    ? `🔥 ${p.discount} MMK (Discount)`
+    : `${p.price} MMK`;
+
+  await ctx.reply(
+`📦 ${p.name}
+💰 ${price}
+
+${p.description || ""}`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("💳 Buy Now", `buy_${p.id}`)]
+    ])
+  );
 });
 
-bot.action('buy_now', async (ctx) => {
-  await ctx.reply('💳 Payment:\nKpay – 09793101410 (kyaw chit koko)\nWave – 09976216414 (kyaw chit koko)\n\n👉 Screenshot ပို့ပြီး Confirm နှိပ်ပါ',
-    Markup.inlineKeyboard([[Markup.button.callback('📸 I\'ve Paid', 'i_have_paid')]]));
+// ====== BUY ======
+bot.action(/^buy_(.+)/, async (ctx) => {
+  const id = ctx.match[1];
+  const { data: p } = await supabase.from('products').select('*').eq('id', id).single();
+
+  await supabase.from('pending_orders').upsert({ 
+    user_id: ctx.from.id, 
+    product_id: id,
+    product_data: p
+  });
+
+  await ctx.reply(
+`💳 Payment
+
+KBZ - 09793101410
+Wave - 09976216414
+AYA - 09793101410
+
+📸 Screenshot ပို့ပါ`,
+    Markup.inlineKeyboard([
+      [Markup.button.callback("📸 I've Paid", "paid")]
+    ])
+  );
 });
 
-bot.action('i_have_paid', async (ctx) => { await ctx.reply('📸 ငွေလွှဲ Screenshot ပို့ပေးပါခင်ဗျာ။'); });
-bot.action('show_faq', async (ctx) => { 
-  await ctx.reply('❓ FAQ\n\n၁။ Ebook ဘယ်လိုရမလဲ? - Admin စစ်ပြီး ၁ နာရီအတွင်း ပို့ပေးပါတယ်။\n၂။ Refund ရမလား? - ၇ ရက်အတွင်း မပြောင်းလဲရင် ပြန်အမ်းပေးပါတယ်။', 
-    Markup.inlineKeyboard([[Markup.button.callback('🔙 Back', 'back_to_start')]])); 
+bot.action('paid', async (ctx) => {
+  await ctx.reply("📸 Screenshot ပို့ပါ");
 });
 
-// --- PHOTO HANDLING ---
+// ====== RECEIVE SCREENSHOT ======
 bot.on('photo', async (ctx) => {
   const userId = ctx.from.id;
-  const photo = ctx.message.photo[ctx.message.photo.length - 1];
-  try {
-    await ctx.telegram.sendPhoto(ADMIN_ID, photo.file_id, {
-      caption: `📩 Payment from: ${ctx.from.first_name} (ID: ${userId})\n\nAdmin Actions:`,
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('✅ Confirm', `admin_confirm_${userId}`)],
-        [Markup.button.callback('❌ Reject', `admin_reject_${userId}`)]
-      ])
-    });
-    await ctx.reply('✅ Screenshot ရရှိပါပြီ။ Admin စစ်ဆေးပြီးနောက် အကြောင်းကြားပေးပါမည်။');
-  } catch (e) { console.error(e); }
+  const photo = ctx.message.photo.pop();
+
+  await ctx.telegram.sendPhoto(ADMIN_ID, photo.file_id, {
+    caption: `Payment from ${userId}`,
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback("✅ Confirm", `ok_${userId}`)],
+      [Markup.button.callback("❌ Reject", `no_${userId}`)]
+    ])
+  });
+
+  await ctx.reply("Waiting admin confirm...");
 });
 
-// --- ADMIN PANEL & COMMANDS ---
-bot.command('admin', async (ctx) => {
-  if (String(ctx.from.id) !== String(ADMIN_ID)) return;
-  await ctx.reply('🛠️ **Admin Dashboard**', Markup.inlineKeyboard([
-    [Markup.button.callback('📊 View Orders', 'admin_orders')],
-    [Markup.button.callback('➕ Add Product', 'admin_add_help')],
-    [Markup.button.callback('📢 Broadcast', 'admin_bc_help')]
-  ]));
+// ====== ADMIN CONFIRM ======
+bot.action(/^ok_(.+)/, async (ctx) => {
+  const userId = ctx.match[1];
+  const { data: order } = await supabase.from('pending_orders').select('*').eq('user_id', userId).single();
+
+  if (!order) return;
+
+  const p = order.product_data;
+  const links = p.channels.map(c => `👉 ${c}`).join("\n");
+
+  await bot.telegram.sendMessage(userId,
+`✅ Confirmed!
+
+📥 Join:
+${links}`);
+
+  await supabase.from('pending_orders').delete().eq('user_id', userId);
 });
 
-bot.action('admin_orders', async (ctx) => {
-  const list = Object.values(users).map(u => `- ${u.username} (${u.id})`).join('\n') || 'No users.';
-  await ctx.reply(`📊 လက်ရှိအသုံးပြုသူများ:\n${list}`);
+// ====== REJECT ======
+bot.action(/^no_(.+)/, async (ctx) => {
+  const userId = ctx.match[1];
+  await bot.telegram.sendMessage(userId, "❌ Payment failed");
 });
 
-bot.action('admin_add_help', async (ctx) => {
-  await ctx.reply('➕ **Product ထည့်ရန်:**\n`/addproduct id | name | price | category` လို့ ရိုက်ပါ။\n\nဥပမာ:\n`/addproduct habit | Atomic Habit | 15,000 | Ebooks`');
+// ====== ADD PRODUCT ======
+bot.command('add', async (ctx) => {
+  if (String(ctx.from.id) !== ADMIN_ID) return;
+  await ctx.reply("Send:\nid|name|price|discount|desc|channel1,channel2");
 });
 
-bot.action('admin_bc_help', async (ctx) => {
-  await ctx.reply('📢 **Broadcast ပို့ရန်:**\n`/broadcast သင့်စာသား` လို့ ရိုက်ပါ။');
-});
+bot.on('text', async (ctx) => {
+  if (String(ctx.from.id) !== ADMIN_ID) return;
+  if (!ctx.message.text.includes('|')) return;
 
-// Add Product Command
-bot.command('addproduct', async (ctx) => {
-  if (String(ctx.from.id) !== String(ADMIN_ID)) return;
-  const parts = ctx.message.text.split(' ').slice(1).join(' ').split('|').map(s => s.trim());
-  if (parts.length < 4) return ctx.reply('Format မှားနေပါတယ်။ /addproduct id | name | price | category');
-  products.push({ id: parts[0], name: parts[1], price: parts[2], category: parts[3] });
-  await ctx.reply(`✅ Added: ${parts[1]}`);
-});
+  const [id, name, price, discount, desc, channels] = ctx.message.text.split('|');
 
-// Delete Product Command
-bot.command('delproduct', async (ctx) => {
-  if (String(ctx.from.id) !== String(ADMIN_ID)) return;
-  const id = ctx.message.text.split(' ')[1];
-  products = products.filter(p => p.id !== id);
-  await ctx.reply(`✅ Deleted product ID: ${id}`);
-});
+  await supabase.from('products').insert({
+    id,
+    name,
+    price: Number(price),
+    discount: discount ? Number(discount) : null,
+    description: desc,
+    channels: channels.split(',')
+  });
 
-// Admin Confirm/Reject Actions
-bot.action(/^admin_confirm_(.+)$/, async (ctx) => {
-  const targetId = ctx.match[1];
-  try {
-    await ctx.telegram.sendMessage(targetId, '✅ သင့်ငွေလွှဲမှုကို အတည်ပြုပြီးပါပြီ။ Ebook ကို ပို့ပေးလိုက်ပါတယ်။');
-    if (fs.existsSync(PDF_FILE_PATH)) await ctx.telegram.sendDocument(targetId, { source: PDF_FILE_PATH });
-    await ctx.telegram.sendMessage(targetId, `🎁 VIP Book Club: ${VIP_BOOK_CLUB_LINK}`);
-    await ctx.reply(`User ${targetId} ကို အတည်ပြုပြီးပါပြီ။`);
-  } catch (e) { ctx.reply('Error: ' + e.message); }
-});
-
-bot.action(/^admin_reject_(.+)$/, async (ctx) => {
-  const targetId = ctx.match[1];
-  try {
-    await ctx.telegram.sendMessage(targetId, '❌ သင့်ငွေလွှဲမှု မှားယွင်းနေပါသည်။ ကျေးဇူးပြု၍ Admin (@Diary1031) ကို ဆက်သွယ်ပါ။');
-    await ctx.reply(`User ${targetId} ကို Reject လုပ်ပြီးပါပြီ။`);
-  } catch (e) { console.error(e); }
-});
-
-bot.command('broadcast', async (ctx) => {
-  if (String(ctx.from.id) !== String(ADMIN_ID)) return;
-  const msg = ctx.message.text.split(' ').slice(1).join(' ');
-  for (const id in users) { try { await ctx.telegram.sendMessage(id, `📢 **Admin Message:**\n\n${msg}`); } catch(e){} }
-  await ctx.reply('✅ Broadcast Sent.');
+  ctx.reply("✅ Added to Database");
 });
 
 bot.launch();
-console.log('Admin Bot is running...');
+console.log("Bot running with Supabase...");
